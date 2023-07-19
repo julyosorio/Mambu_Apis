@@ -1,0 +1,31 @@
+pool:
+  name: Azure Pipelines
+  demands: java
+
+#Your build pipeline references an undefined variable named ‘Parameters.wrapperScript’. Create or edit the build pipeline for this YAML file, define the variable on the Variables tab. See https://go.microsoft.com/fwlink/?linkid=865972
+
+steps:
+  - task: Gradle@2
+    displayName: 'pre ejecucion'
+    inputs:
+      gradleWrapperFile: '$(Parameters.wrapperScript)'
+      tasks: 'clean -x test'
+      publishJUnitResults: false
+      jdkVersionOption: 1.11
+
+  - task: Gradle@3
+    displayName: 'compilar'
+    inputs:
+      tasks: 'build -x test'
+      publishJUnitResults: false
+      jdkVersionOption: 1.11
+    continueOnError: true
+
+  - task: Gradle@3
+    displayName: 'ejecutar pruebas'
+    inputs:
+      tasks: 'test --tests RecuperarUsuarioTestRunner --info'
+      publishJUnitResults: false
+      jdkVersionOption: 1.11
+      sonarQubeRunAnalysis: true
+      sqGradlePluginVersionChoice: build

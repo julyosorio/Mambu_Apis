@@ -1,0 +1,144 @@
+import java.text.SimpleDateFormat
+
+def dateFormat = new SimpleDateFormat("yyyyMMddHHmm")
+def date = new Date()
+def timestamp = dateFormat.format(date).toString()
+
+pipeline {
+
+    agent {
+        label params.AGENTE_EJECUCION
+    }
+
+    options {
+        sendSplunkConsoleLog()
+        splunkinsJobOption enableDiagram: true
+        skipDefaultCheckout()
+    }
+
+    environment {
+        SCM_URL = ""
+        SCM_CREDENTIALS = "" //Credenciales
+        SCM_BRANCH = "" //Rama git
+        TEST_RUNNER = ""
+        NOMBRE_PROYECTO_GIT = "base-project-qa" //Nombre del proyecto en GIT
+        EMAIL_DEVELOPERS = ""
+    }
+
+    parameters {
+        string(
+            defaultValue: "",
+            description: 'Agente en el cual se ejecutaran las pruebas',
+            name: 'AGENTE_EJECUCION'
+        )
+    }
+
+    stages {
+        stage('Obtener fuentes') {
+            steps {
+               sh "git config --global --replace-all http.sslVerify false"
+               checkout scm: ([
+                   $class: 'GitSCM',
+                   branches: [[name: "${SCM_BRANCH}"]],
+                   doGenerateSubmoduleConfigurations: false,
+                   extensions: [],
+                   submoduleCfg: [],
+                   userRemoteConfigs: [[credentialsId: "${SCM_CREDENTIALS}", url: "${SCM_URL}"]]
+               ])
+            }
+        }
+
+        stage('Ejecutar pruebas') {
+            steps {
+                withCredentials([
+                    usernamePassword(credentialsId: 'Repositorio-Maven', usernameVariable: 'MAVEN_USER', passwordVariable: 'MAVEN_PASSWORD')
+                ])
+                {
+                    catchError {
+                        sh "chmod 777 gradlew"
+                        echo "RUNNING CLEAN"
+                        sh "./gradlew clean"
+                        sh "./gradlew test --tests ${TEST_RUNNER} --info"
+                        currentBuild.result = 'SUCCESS'
+                    }
+                    echo "El resultado de la prueba segunda ejecución es : '${currentBuild.result}'"
+
+                }
+            }
+        }
+
+        stage('Analisis Sonar'){
+            steps{
+                withCredentials([
+                    usernamePassword(credentialsId: 'Repositorio-Maven', usernameVariable: 'MAVEN_USER', passwordVariable: 'MAVEN_PASSWORD'),
+                ]) {
+                    script {
+                        withSonarQubeEnv('SonarQube') {
+                            dir("${workspace}"){
+                                sh "./gradlew -version"
+                                sh "chmod 777 ./gradlew";
+                                sh "./gradlew --info sonarqube -Dsonar.projectKey=${NOMBRE_PROYECTO_GIT} -Dsonar.projectName=${NOMBRE_PROYECTO_GIT} -Dsonar.projectVersion=${BUILD_ID} -x test"
+                            }
+                        }
+
+                        }
+                        timeout(time: 30, unit: 'MINUTES') {
+                            def qg = waitForQualityGate()
+                            print "Finished waiting"
+                            QUALITY_GATE_RESULT = qg.status
+                            catchError {
+                                if (QUALITY_GATE_RESULT != 'OK') {
+                                    error "Fallo en el quality gate de Sonar, estado: ${qg.status}"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+
+
+        stage('Generar evidencia') {
+            steps {
+                catchError {
+                    publishHTML([
+                        allowMissing         : false,
+                        alwaysLinkToLastBuild: true,
+                        keepAll              : true,
+                        reportDir            : "${WORKSPACE}//target//site//serenity",
+                        reportFiles          : 'index.html',
+                        reportName           : 'Evidencias Pruebas Aceptacion',
+                        reportTitles         : ''
+                    ])
+                    echo 'Reporte Html realizado con exito'
+                }
+            }
+        }
+
+        stage('Notificar') {
+            steps {
+                catchError {
+                    script {
+                        enviarCorreo(currentBuild.result)
+                    }
+                }
+            }
+        }
+    }
+
+}
+
+def enviarCorreo(resultadoTest) {
+    def asunto = "RESLTADO DE PRUEBAS AUTOMATIZADAS"
+    def currentTime = new Date(currentBuild.timeInMillis)
+    def formato = new SimpleDateFormat("dd/MM/yyyy HH:mm:ss")
+    def timeInicioPruebas = formato.format(currentTime)
+    def resultado = "El resultado de la prueba automatizada para el proyecto ${NOMBRE_PROYECTO_GIT} ejecutada el dia ${formato} fue ${resultadoTest}"
+
+    emailext(
+        subject: "${asunto}",
+        body: "${resultado}",
+        to: "${recibe}"
+    )
+}
